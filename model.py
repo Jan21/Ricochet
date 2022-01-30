@@ -1,11 +1,14 @@
 import itertools
 import random
-
+import numpy
+import networkx as nx
+from collections import defaultdict
 # Directions
 NORTH = 'N'
 EAST = 'E'
 SOUTH = 'S'
 WEST = 'W'
+
 
 DIRECTIONS = [NORTH, EAST, SOUTH, WEST]
 
@@ -43,8 +46,9 @@ GREEN = 'G'
 BLUE = 'B'
 YELLOW = 'Y'
 
+const = 4
 COLORS = [RED, GREEN, BLUE, YELLOW]
-
+COLOR_OFFSETS={BLUE:0,RED:1*const,GREEN:2*const,YELLOW:3*const,'goal':4*const}
 # Shapes
 CIRCLE = 'C'
 TRIANGLE = 'T'
@@ -177,7 +181,7 @@ def idx(x, y, size=16):
 
 def xy(index, size=16):
     x = index % size
-    y = index / size
+    y = index // size
     return (x, y)
 
 def rotate_quad(data, times=1):
@@ -200,7 +204,7 @@ def create_grid(quads=None):
             x, y = xy(j, 8)
             x += dx * 8
             y += dy * 8
-            index = idx(x, y)
+            index = int(idx(int(x), int(y)))
             result[index] = data
     return result
 
@@ -209,6 +213,18 @@ def to_mask(cell):
     for letter, mask in M_LOOKUP.items():
         if letter in cell:
             result |= mask
+    return result
+
+translate_dic = {"N":'u',
+                 "E":'r',
+                 "S":'b',
+                 "W":'l'}
+
+def to_cell_code(cell):
+    result = []
+    for letter, mask in M_LOOKUP.items():
+        if letter in cell:
+            result.append(letter)
     return result
 
 # Game
@@ -247,7 +263,7 @@ class Game(object):
                 break
         return result
     def get_robot(self, index):
-        for color, position in self.robots.iteritems():
+        for color, position in self.robots.items():
             if position == index:
                 return color
         return None
@@ -258,9 +274,28 @@ class Game(object):
         if direction in self.grid[index]:
             return False
         new_index = index + OFFSET[direction]
-        if new_index in self.robots.itervalues():
+        if new_index in self.robots.values():
             return False
         return True
+
+    def compute_move_with_info(self, color, direction):
+        index = self.robots[color]
+        robots = self.robots.values()
+        robot_blocked_at_index = (None,None)
+        while True:
+            if direction in self.grid[index]: # check if there is a wall in the direction
+                break
+            new_index = index + OFFSET[direction]
+            if new_index in robots:
+                for k,v in self.robots.items():  #TODO rewrite
+                    if v == new_index:
+                        block_color = k
+                        break
+                robot_blocked_at_index = (block_color,new_index)
+                break
+            index = new_index
+        return index,robot_blocked_at_index
+
     def compute_move(self, color, direction):
         index = self.robots[color]
         robots = self.robots.values()
@@ -275,8 +310,8 @@ class Game(object):
     def do_move(self, color, direction):
         start = self.robots[color]
         last = self.last
-        if last == (color, REVERSE[direction]):
-            raise Exception
+        #if last == (color, REVERSE[direction]):
+        #    raise Exception
         end = self.compute_move(color, direction)
         if start == end:
             raise Exception
@@ -297,6 +332,176 @@ class Game(object):
                 if self.can_move(color, direction):
                     result.append((color, direction))
         return result
+
+    def could_move(self, index, direction):
+
+        if direction in self.grid[index]:
+            return False
+        new_index = index + OFFSET[direction]
+        if new_index in self.robots.values():
+            return False
+        return True
+
+    def compute_hyp_move(self, start_index, direction):
+        index = start_index
+        robots = self.robots.values()
+        while True:
+            if direction in self.grid[index]:
+                break
+            new_index = index + OFFSET[direction]
+            if new_index in robots:
+                break
+            index = new_index
+        return index
+
+
+    def get_neighbours(self,index):
+        neighs = []
+        for direction in DIRECTIONS:
+            if self.could_move(index, direction):
+                neighs.append(self.compute_hyp_move(index,direction))
+        return neighs
+
+    def get_goal_idx(self):
+        return numpy.argmax([self.token in i for i in self.grid])
+
+    def bfs(self,color):
+        if color == 'goal':
+            pos_dic = {}
+            robot_pos = self.get_goal_idx()
+            for col,ix in self.robots.items():
+                pos_dic[col]=ix
+                self.robots[col]=-10
+
+        else:
+            robot_pos = self.robots[color]
+            self.robots[color] = -10 # temporarily remove robot from the board
+        visited = []  # List to keep track of visited nodes.
+        queue = []  # Initialize a queue
+        paths = []
+
+
+        def bfs0(visited, node):
+            visited.append(node)
+            queue.append(node)
+
+            while queue:
+                s = queue.pop(0)
+
+                for neighbour in self.get_neighbours(s):
+                    paths.append((s, neighbour))
+                    if neighbour not in visited:
+                        visited.append(neighbour)
+                        queue.append(neighbour)
+
+        bfs0(visited, robot_pos)
+        if color=='goal':
+            for col,ix in pos_dic.items():
+                self.robots[col]=ix
+        else:
+            self.robots[color] = robot_pos # return the robot back
+        return paths
+    def get_edges_in_comp(self,comp,G):
+        edges = []
+        for (u,v) in G.edges:
+            if (u in comp) and (v in comp):
+                edges.append((u,v))
+        return edges
+    def get_graph(self):
+        G = nx.DiGraph()
+        G.add_nodes_from(range(len(self.grid)))
+        pos_dic = {}
+        for col,ix in self.robots.items():
+            pos_dic[col]=ix
+            self.robots[col]=-10
+        for cell in range(len(self.grid)):
+            x,y = xy(cell)
+            if (x==8 or x==7) and (y==8 or x==7):
+                continue
+            for neighbour in self.get_neighbours(cell):
+                G.add_edge(cell,neighbour)
+        strongly_connected_comps = list(enumerate(filter(lambda x:len(x)>=2,nx.algorithms.components.strongly_connected_components(G))))
+
+        id2comp = {}
+        HG = nx.DiGraph()
+        for i,comp in strongly_connected_comps:
+            HG.add_node(i,nodes=comp)
+            for node in comp:
+                id2comp[node] = i
+        for u,v in G.edges:
+            if u in id2comp.keys() and v in id2comp.keys():
+
+                HG.add_edge(id2comp[u],id2comp[v])
+
+        sorted_comps = sorted(strongly_connected_comps,key=lambda x:-len(x[1]))
+        edges_in_comps = []
+        for i,comp in sorted_comps:
+            if len(comp)<2:
+                print('error')
+            edges = self.get_edges_in_comp(comp,G)
+            if len(edges)<2:
+                print('error')
+            edges_in_comps.append((i,edges))
+        nodes_in_comps = []
+        robots_in_comps = defaultdict(list)
+        goal_idx = self.get_goal_idx()
+        for i,comp in edges_in_comps:
+            nodes = []
+            for edge in comp:
+                edge_nodes = self.get_nodes_along_edge(edge)
+
+
+                nodes += edge_nodes
+            nodes_idxs = list(map(lambda x:x[0],nodes))
+            if len(nodes)<2:
+                print('error')
+            for k,v in pos_dic.items():
+                if v in nodes_idxs:
+                    robots_in_comps[k].append(i)
+            if goal_idx in nodes_idxs:
+                robots_in_comps['goal'].append(i)
+            nodes_in_comps.append((i,nodes))
+        id2comp_full = defaultdict(list)
+
+        for i,nodes in nodes_in_comps:
+            for node in nodes:
+                id2comp_full[node[0]].append((i,node[1:]))
+        mHG = nx.MultiDiGraph(HG)
+        for k,v in id2comp_full.items():
+            if len(v)==1:
+                continue
+            else:
+                for i in v:
+                    for j in v:
+                        if i[0]==j[0] or (i[0],j[0]) in HG.edges:
+                            continue
+                        else:
+                            if mHG.get_edge_data(i[0],j[0]) and mHG.get_edge_data(i[0],j[0])[0]['node_id']==k:
+                                continue
+                            mHG.add_edge(i[0],j[0],possible=True,node_id=k,neighbours=i[1])
+
+
+
+        for col, ix in pos_dic.items():
+            self.robots[col] = ix
+        return edges_in_comps,nodes_in_comps,mHG,HG,robots_in_comps
+    def get_nodes_along_edge(self,edge):
+        if abs(edge[0]-edge[1]) >= 16:
+            center = range(min(edge),max(edge)+1,16)
+            above = range(min(edge)-16,max(edge)-15,16)
+            bellow = range(min(edge)+16,max(edge)+17,16)
+            zipped = [list(t) for t in zip(center,above,bellow)]
+            zipped[0][1],zipped[0][2],zipped[-1][1],zipped[-1][2] = -1,-1,-1,-1
+            return zipped
+
+        else:
+            left = range(min(edge)-1,max(edge))
+            center = range(min(edge),max(edge)+1)
+            right = range(min(edge) + 1, max(edge)+2)
+            zipped = [list(t) for t in zip(center,left,right)]
+            zipped[0][1],zipped[0][2],zipped[-1][1],zipped[-1][2] = -1,-1,-1,-1
+            return zipped
+
     def over(self):
         color = self.token[0]
         return self.token in self.grid[self.robots[color]]
@@ -351,3 +556,34 @@ class Game(object):
             'token': token,
             'robots': robots,
         }
+
+    def save_txt(self,filenum=0):
+        grid = []
+        token = None
+        robots = [(color,self.robots[color]) for color in COLORS]
+        for index, cell in enumerate(self.grid):
+            codes = to_cell_code(cell)
+            if self.token in cell:
+                token = index
+            for code in codes:
+                if code in ['N','W','E','S']:
+                    x,y = xy(index)
+                    x,y = x+1,y+1
+                    grid.append((x,y,translate_dic[code]))
+        target_color = self.token[0]
+        textdata = '16\n'
+        for color, ix in robots:
+            x,y = xy(ix)
+            x,y = x+1,y+1
+            textdata += color + " " + str(y) + " " + str(x) + "\n"
+
+        x,y = xy(token)
+        x,y = x+1,y+1
+        textdata += target_color + " " + str(y) + " " + str(x) + "\n" + str(len(grid)) + "\n"
+
+        for x,y,c in grid:
+            textdata += str(y) + " " + str(x) + " " + c + "\n"
+        with open(f'export/{str(filenum)}.rr','w') as f:
+            f.write(textdata)
+
+        print(textdata)
