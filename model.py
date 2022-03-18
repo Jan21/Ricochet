@@ -208,6 +208,92 @@ def create_grid(quads=None):
             result[index] = data
     return result
 
+
+def replace(input,char):
+    if input == 'X':
+        return char
+    return "".join(set(input+char))
+
+def draw_center(result, num_quads, cells_per_quad):
+    size = num_quads * cells_per_quad
+    print(size)
+    id  = size * (size-1) //2 -1
+    result[id] = 'NW'
+    result[id+1] = 'NE'
+    result[id+num_quads*cells_per_quad] = 'SW'
+    result[id+num_quads*cells_per_quad+1] = 'SE'
+    result[id-1] = replace(result[id-1],'E')
+    result[id+2] = replace(result[id+2],'W')
+    result[id+num_quads*cells_per_quad-1] = replace(result[id+num_quads*cells_per_quad-1],'E')
+    result[id+num_quads*cells_per_quad+2] = replace(result[id+num_quads*cells_per_quad+2],'W')
+    result[id-num_quads*cells_per_quad] = replace(result[id-num_quads*cells_per_quad],'S')
+    result[id-num_quads*cells_per_quad+1] = replace(result[id-num_quads*cells_per_quad+1],'S')
+    result[id+2*num_quads*cells_per_quad] = replace(result[id+2*num_quads*cells_per_quad],'N')
+    result[id+2*num_quads*cells_per_quad+1] = replace(result[id+2*num_quads*cells_per_quad+1],'N')
+    return  result
+
+def create_random_grid():
+    num_quads = 4
+    cells_per_quad = 4
+    obstacle_type_vertical = ('N','S')
+    obstacle_type_horizontal = ('W','E')
+    cells_per_row = num_quads*cells_per_quad
+    result = []
+    for i in range((cells_per_row)**2):
+        if i%cells_per_row==0:
+            result.append('W')
+        elif i%cells_per_row==cells_per_row-1:
+            result.append('E')
+        elif i in range(cells_per_row):
+            result.append('N')
+        elif i in range(cells_per_row*(cells_per_row-1),cells_per_row**2):
+            result.append('S')
+        else:
+            result.append('X')
+    result[0],result[cells_per_row-1],result[cells_per_row*(cells_per_row-1)],result[cells_per_row**2-1] = 'NW','NE','SW','SE'
+
+
+    obstacle_cells = []
+    for i in range(num_quads):
+        for j in range(num_quads):
+                while True:
+                    quad_x = random.choice(range(1,cells_per_quad-1))
+                    quad_y = random.choice(range(1,cells_per_quad-1))
+                    id = (i*cells_per_quad + quad_y)*num_quads*cells_per_quad + j*cells_per_quad + quad_x
+                    if id in list(range(cells_per_row)) + list(range(0,cells_per_row*(cells_per_row-1),cells_per_row)) + list(range(cells_per_row-1,cells_per_row**2-1,cells_per_row)) + list(range(cells_per_row*(cells_per_row-1),cells_per_row**2-1)):
+                        continue
+                    else: break
+                obstacle_cells.append(id)
+                obstacle_horizontal = random.choice(obstacle_type_horizontal)
+                obstacle_vertical = random.choice(obstacle_type_vertical)
+                horizontal_id,horizontal_neigh_type = (id - 1,'E') if obstacle_horizontal == 'W' else (id + 1,'W')
+                vertical_id,vertical_neigh_type = (id - num_quads * cells_per_quad,'S') if obstacle_vertical == 'N' else (id + num_quads*cells_per_quad,'N')
+                result[id] = replace(result[id],obstacle_vertical+obstacle_horizontal)
+                result[horizontal_id] = replace(result[horizontal_id],horizontal_neigh_type)
+                result[vertical_id] = replace(result[vertical_id],vertical_neigh_type)
+    side_coefs = [(('E','W'),0,0,1),
+                  (('S','N'),0,1,0),
+                  (('E','W'),num_quads*cells_per_quad * (num_quads*cells_per_quad-1),0,1),
+                  (('S','N'),num_quads*cells_per_quad-1,1,0)]
+    for side in side_coefs:
+        start = side[1]
+        for i in range(num_quads):
+
+            j = random.choice(range(cells_per_quad-1))
+            modulo = start+i*side[2]*cells_per_quad*cells_per_quad*num_quads + i*cells_per_quad*side[3]
+            j_inc = j*side[3] + j*side[2]*cells_per_quad*num_quads
+            id = modulo+j_inc
+            if numpy.random.binomial(1,0.7):
+                result[id]= replace(result[id],side[0][0])
+                increment = id + 1*side[3] + num_quads*cells_per_quad*side[2]
+                result[increment] = replace(result[increment],side[0][1])
+
+    target = random.choice(obstacle_cells)
+    target_robot = random.choice(COLORS)+'T'
+    result = draw_center(result,num_quads,cells_per_quad)
+    result[target]= result[target]+target_robot
+    return cells_per_row, target_robot, target ,result
+
 def to_mask(cell):
     result = 0
     for letter, mask in M_LOOKUP.items():
@@ -238,15 +324,17 @@ class Game(object):
     def __init__(self, seed=None, quads=None, robots=None, token=None):
         if seed:
             random.seed(seed)
-        self.grid = create_grid(quads)
+        if quads:
+            self.grid = create_grid(quads)
+        else: self.cells_per_row,token, self.token_id, self.grid = create_random_grid()
         if robots is None:
-            self.robots = self.place_robots()
+            self.robots = self.place_robots(token)
         else:
             self.robots = dict(zip(COLORS, robots))
         self.token = token or random.choice(TOKENS)
         self.moves = 0
         self.last = None
-    def place_robots(self):
+    def place_robots(self,token):
         result = {}
         used = set()
         for color in COLORS:
@@ -257,6 +345,8 @@ class Game(object):
                 if self.grid[index][-2:] in TOKENS:
                     continue
                 if index in used:
+                    continue
+                if index==self.token_id:
                     continue
                 result[color] = index
                 used.add(index)
@@ -557,7 +647,7 @@ class Game(object):
             'robots': robots,
         }
 
-    def save_txt(self,filenum=0):
+    def save_txt(self,filenum=0,):
         grid = []
         token = None
         robots = [(color,self.robots[color]) for color in COLORS]
@@ -567,17 +657,17 @@ class Game(object):
                 token = index
             for code in codes:
                 if code in ['N','W','E','S']:
-                    x,y = xy(index)
+                    x,y = xy(index,self.cells_per_row)
                     x,y = x+1,y+1
                     grid.append((x,y,translate_dic[code]))
         target_color = self.token[0]
-        textdata = '16\n'
+        textdata = f'{self.cells_per_row}\n'
         for color, ix in robots:
-            x,y = xy(ix)
+            x,y = xy(ix,self.cells_per_row)
             x,y = x+1,y+1
             textdata += color + " " + str(y) + " " + str(x) + "\n"
 
-        x,y = xy(token)
+        x,y = xy(token,self.cells_per_row)
         x,y = x+1,y+1
         textdata += target_color + " " + str(y) + " " + str(x) + "\n" + str(len(grid)) + "\n"
 

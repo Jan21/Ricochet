@@ -6,6 +6,10 @@ import pickle
 import networkx as nx
 import itertools
 import copy
+from collections import namedtuple
+
+example = namedtuple('example', ['grid', 'robots', 'token', 'path', 'expl'])
+
 
 class View(wx.Panel):
     def __init__(self, parent, game):
@@ -22,6 +26,38 @@ class View(wx.Panel):
         self.Bind(wx.EVT_SIZE, self.on_size)
         self.Bind(wx.EVT_PAINT, self.on_paint)
         self.Bind(wx.EVT_KEY_DOWN, self.on_key_down)
+    def solve_with_expl(self):
+        self.steps_with_info = []
+        self.path = ricochet.search(self.game, self.callback)
+        self.path_copy = copy.deepcopy(self.path)
+        self.on_solve_sync()
+        if len(self.steps_with_info)==0:
+            return None
+        explanations = self.compute_explanation()
+        return explanations
+
+    def create_data(self):
+        num_examples = 100000
+
+        for j in range(10):
+            dataset = []
+            for i in range(num_examples):
+                self.path = None
+                self.undo = []
+                self.lines = []
+                self.connected = {}
+                self.nodes = {}
+                self.game = model.Game()
+                game_desc = copy.deepcopy(self.game)
+                expl = self.solve_with_expl()
+                if expl==None:
+                    continue
+                path_copy = copy.deepcopy(self.path)
+                dataset.append(example(game_desc.grid,game_desc.robots,game_desc.token,path_copy,expl))
+                print(i)
+            with open(f'data2/dataset{j}.pkl','wb') as f:
+                pickle.dump(dataset,f)
+
     def solve(self):
         self.steps_with_info = []
         robots_temp = copy.deepcopy(self.game.robots)
@@ -34,7 +70,7 @@ class View(wx.Panel):
         self.game.moves = 0
         self.game.robots = robots_temp
         print(self.steps_with_info)
-        self.compute_explanation()
+        explanations = self.compute_explanation()
         self.on_solve()
 
     def get_positions(self,edge):
@@ -79,9 +115,6 @@ class View(wx.Panel):
         return explanations, explained
 
 
-            
-
-
     def explain_part(self,steps,explained):
         explanations = []
         helping_color,index = steps[-1][-1]
@@ -107,8 +140,8 @@ class View(wx.Panel):
         for meet_t in meet_ts:
             explained_part,explained[:meet_t+1] = self.explain_part(self.steps_with_info[:meet_t+1],explained[:meet_t+1])
             explanations += explained_part
-        print(explanations)
-        print(explained)
+        #print(explanations)
+        #print(explained)
         return explanations
 
     def callback(self, depth, nodes, inner, hits):
@@ -242,19 +275,21 @@ class View(wx.Panel):
                 self.get_graph()
             elif value == 'M':
                 game = None
-                for i in range(1000):
+                for i in range(10000):
                     self.game = model.Game()
 
-                    if i==11:
-                        with open('temp.pkl', 'wb') as f:
-                            pickle.dump(self.game,f)
-                    #self.game.save_txt(i)
+                    #if i==11:
+                    #    with open('temp.pkl', 'wb') as f:
+                    #        pickle.dump(self.game,f)
+                    self.game.save_txt(i)
             elif value == 'U' and self.undo:
                 self.undo_move()
                 self.Refresh()
             elif value == 'A':
                 self.bfs()
                 self.Refresh()
+            elif value == 'Q':
+                self.create_data()
             elif value == 'N':
                 self.path = None
                 self.undo = []
@@ -371,7 +406,7 @@ class Frame(wx.Frame):
     def __init__(self, seed=None):
         wx.Frame.__init__(self, None, -1, 'Ricochet Robot!')
         game = model.Game(seed)
-        game = model.Game.hardest()
+        #game = model.Game.hardest()
         self.view = View(self, game)
         self.view.SetSize((800, 800))
         self.Fit()
