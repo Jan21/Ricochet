@@ -1,0 +1,8 @@
+when removing helpers, the order may be broken....check
+fix case when no intersection possible with target_component
+compute shortest in the beggining
+fix the key error
+support graph contains duplicate edges
+check agains locked robot
+rewrite to cugraph
+don't verify incumbent again

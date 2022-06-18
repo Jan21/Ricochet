@@ -3,6 +3,7 @@ import random
 import numpy
 import networkx as nx
 from collections import defaultdict
+
 # Directions
 NORTH = 'N'
 EAST = 'E'
@@ -20,9 +21,9 @@ REVERSE = {
 }
 
 OFFSET = {
-    NORTH: -16,
+    NORTH: -32,
     EAST: 1,
-    SOUTH: 16,
+    SOUTH: 32,
     WEST: -1,
 }
 
@@ -176,10 +177,10 @@ ROTATE_WALL = {
 }
 
 # Helper Functions
-def idx(x, y, size=16):
+def idx(x, y, size=32):
     return y * size + x
 
-def xy(index, size=16):
+def xy(index, size=32):
     x = index % size
     y = index // size
     return (x, y)
@@ -197,7 +198,7 @@ def create_grid(quads=None):
         random.shuffle(quads)
     quads = [quad.split(',') for quad in quads]
     quads = [rotate_quad(quads[i], i) for i in [0, 1, 3, 2]]
-    result = [None for i in range(16 * 16)]
+    result = [None for i in range(32 * 32)]
     for i, quad in enumerate(quads):
         dx, dy = xy(i, 2)
         for j, data in enumerate(quad):
@@ -233,7 +234,7 @@ def draw_center(result, num_quads, cells_per_quad):
     return  result
 
 def create_random_grid():
-    num_quads = 4
+    num_quads = 8
     cells_per_quad = 4
     obstacle_type_vertical = ('N','S')
     obstacle_type_horizontal = ('W','E')
@@ -305,6 +306,9 @@ translate_dic = {"N":'u',
                  "E":'r',
                  "S":'b',
                  "W":'l'}
+translate_dic_rev = {}
+for k,v in translate_dic.items():
+    translate_dic_rev[v]=k
 
 def to_cell_code(cell):
     result = []
@@ -397,6 +401,17 @@ class Game(object):
                 break
             index = new_index
         return index
+
+    def do_move_unsafe(self, color, direction):
+        start = self.robots[color]
+        last = self.last
+        #if last == (color, REVERSE[direction]):
+        #    raise Exception
+        end = self.compute_move(color, direction)
+        self.robots[color] = end
+        self.last = (color, direction)
+        return (color, start, last)
+
     def do_move(self, color, direction):
         start = self.robots[color]
         last = self.last
@@ -503,32 +518,28 @@ class Game(object):
         pos_dic = {}
         for col,ix in self.robots.items():
             pos_dic[col]=ix
-            self.robots[col]=-10
+            self.robots[col]=-10 # temporarily remove robots from the grid
+        reachable_nodes = []
         for cell in range(len(self.grid)):
             x,y = xy(cell)
-            if (x==8 or x==7) and (y==8 or x==7):
+            if (x==16 or x==15) and (y==16 or y==15):
                 continue
             for neighbour in self.get_neighbours(cell):
                 G.add_edge(cell,neighbour)
+                reachable_nodes.append(neighbour)
+        reachable_nodes = set(reachable_nodes)
         strongly_connected_comps = list(enumerate(filter(lambda x:len(x)>=2,nx.algorithms.components.strongly_connected_components(G))))
-
-        id2comp = {}
-        HG = nx.DiGraph()
-        for i,comp in strongly_connected_comps:
-            HG.add_node(i,nodes=comp)
-            for node in comp:
-                id2comp[node] = i
-        for u,v in G.edges:
-            if u in id2comp.keys() and v in id2comp.keys():
-
-                HG.add_edge(id2comp[u],id2comp[v])
+        relaxedG = nx.DiGraph(G)
+        for e in relaxedG.edges():
+            relaxedG[e[0]][e[1]]['weight'] = 1
+        weight = 2
 
         sorted_comps = sorted(strongly_connected_comps,key=lambda x:-len(x[1]))
         edges_in_comps = []
         for i,comp in sorted_comps:
             if len(comp)<2:
                 print('error')
-            edges = self.get_edges_in_comp(comp,G)
+            edges = self.get_edges_in_comp(comp,G) # ineffective, iterates over all edges in G and checks if they are in comp
             if len(edges)<2:
                 print('error')
             edges_in_comps.append((i,edges))
@@ -537,60 +548,109 @@ class Game(object):
         goal_idx = self.get_goal_idx()
         for i,comp in edges_in_comps:
             nodes = []
+            #get nodes along edges
             for edge in comp:
-                edge_nodes = self.get_nodes_along_edge(edge)
-
+                edge_nodes = self.get_nodes_along_edge(edge) # returns list of triples, one for each position on the edge. The last two elements contain possible stops to get to that position
+                for inner_node in edge_nodes[1:-1]:
+                    relaxedG.add_edge(edge_nodes[0][0],inner_node[0],weight=weight)
+                    relaxedG.add_edge(edge_nodes[-1][0],inner_node[0],weight=weight)
+                    for inner_node2 in edge_nodes[1:-1]:
+                        relaxedG.add_edge(inner_node[0], inner_node2[0], weight=weight)
+                        relaxedG.add_edge(inner_node2[0], inner_node[0], weight=weight)
 
                 nodes += edge_nodes
             nodes_idxs = list(map(lambda x:x[0],nodes))
             if len(nodes)<2:
                 print('error')
+            #check if robot is in the component
             for k,v in pos_dic.items():
                 if v in nodes_idxs:
                     robots_in_comps[k].append(i)
+            # check if the goal is in the component
             if goal_idx in nodes_idxs:
                 robots_in_comps['goal'].append(i)
             nodes_in_comps.append((i,nodes))
+
+
+        id2comp = {}
+        # create metagraph
+        HG = nx.DiGraph()
+        for i,comp in strongly_connected_comps:
+            HG.add_node(i,nodes=comp)
+            for node in comp:
+                id2comp[node] = i
+        for u,v in G.edges: # edges are directional.
+            if u in id2comp.keys() and v in id2comp.keys():
+
+                HG.add_edge(id2comp[u],id2comp[v])
+
         id2comp_full = defaultdict(list)
 
         for i,nodes in nodes_in_comps:
             for node in nodes:
-                id2comp_full[node[0]].append((i,node[1:]))
-        mHG = nx.MultiDiGraph(HG)
+                id2comp_full[node[0]].append((i,node[1:])) #each node will have the component and the possible neighs for stopping and stop positions
+        mHG = nx.MultiDiGraph()
+        mHG.add_nodes_from(HG)
+        supportHG = nx.MultiDiGraph()
+        supportHG.add_nodes_from(HG)
         for k,v in id2comp_full.items():
+            v = set(v)
             if len(v)==1:
                 continue
             else:
                 for i in v:
                     for j in v:
-                        if i[0]==j[0] or (i[0],j[0]) in HG.edges:
+                        if i[0]==j[0] or (i[0],j[0]) in HG.edges: # don't add selfloops or duplicate edges
                             continue
                         else:
-                            if mHG.get_edge_data(i[0],j[0]) and mHG.get_edge_data(i[0],j[0])[0]['node_id']==k:
-                                continue
-                            mHG.add_edge(i[0],j[0],possible=True,node_id=k,neighbours=i[1])
+                            # check not(mHG.get_edge_data(i[0],j[0]) and mHG.get_edge_data(i[0],j[0])[0]['node_id']==k) and 
+                            if (i[1][0] in reachable_nodes) or (i[1][1] in reachable_nodes):
+                               mHG.add_edge(i[0],j[0],possible=True,node_id=k,neighbours=i[1][:2],stop_cells=i[1][2:])
 
 
+
+
+                            if i[1][0] in reachable_nodes and i[1][0] in id2comp.keys():
+                                support_cell_comp = id2comp[i[1][0]]
+                                supportHG.add_edge(support_cell_comp, j[0], support=True, stop_cell=i[1][3] ,support_cell=i[1][0], gate_cell=k)
+
+
+                            if i[1][1] in reachable_nodes and i[1][1] in id2comp.keys():
+                                support_cell_comp = id2comp[i[1][1]]
+                                supportHG.add_edge(support_cell_comp, j[0], support=True, stop_cell=i[1][2], support_cell=i[1][1], gate_cell=k)
 
         for col, ix in pos_dic.items():
             self.robots[col] = ix
-        return edges_in_comps,nodes_in_comps,mHG,HG,robots_in_comps
-    def get_nodes_along_edge(self,edge):
-        if abs(edge[0]-edge[1]) >= 16:
-            center = range(min(edge),max(edge)+1,16)
-            above = range(min(edge)-16,max(edge)-15,16)
-            bellow = range(min(edge)+16,max(edge)+17,16)
-            zipped = [list(t) for t in zip(center,above,bellow)]
-            zipped[0][1],zipped[0][2],zipped[-1][1],zipped[-1][2] = -1,-1,-1,-1
-            return zipped
+        return edges_in_comps,\
+               nodes_in_comps,\
+               mHG,\
+               supportHG,\
+               HG,\
+               pos_dic,\
+               goal_idx,\
+               id2comp_full,\
+               id2comp,\
+               G,\
+               relaxedG,\
+               reachable_nodes,\
+               robots_in_comps # in which components are the robots
 
-        else:
-            left = range(min(edge)-1,max(edge))
+    def get_nodes_along_edge(self,edge):
+        # TODO add possible stops from along the edge
+        if abs(edge[0]-edge[1]) >= 32: # vertical edge
+            center = range(min(edge),max(edge)+1,32)
+            before = list(range(min(edge)-32,max(edge)-31,32))
+            after = list(range(min(edge)+32,max(edge)+33,32))
+        else: # horizontal
+            before = list(range(min(edge)-1,max(edge)))
             center = range(min(edge),max(edge)+1)
-            right = range(min(edge) + 1, max(edge)+2)
-            zipped = [list(t) for t in zip(center,left,right)]
-            zipped[0][1],zipped[0][2],zipped[-1][1],zipped[-1][2] = -1,-1,-1,-1
-            return zipped
+            after = list(range(min(edge) + 1, max(edge)+2))
+        last = [max(edge) for i in range(len(center))]
+        first = [min(edge) for i in range(len(center))]
+        first[0],first[-1],last[0],last[-1],before[0],before[-1],after[0],after[-1]=-1,-1,-1,-1,-1,-1,-1,-1
+        zipped = [tuple(t) for t in zip(center,before,after,first,last)]
+        #zipped[0][1:],zipped[-1][1:] = [-1,-1,-1,-1],[-1,-1,-1,-1]
+        return zipped
 
     def over(self):
         color = self.token[0]
@@ -646,6 +706,34 @@ class Game(object):
             'token': token,
             'robots': robots,
         }
+
+    def load_txt(self,filenum):
+        with open(f'../export/{str(filenum)}.rr','r') as f:
+            lines = f.readlines()
+            dim = int(lines[0].rstrip())
+            robots = {}
+                
+            for i in range(1,5):
+                robot_info = lines[i].rstrip().split(" ")
+                y,x = robot_info[1:]
+                robots[robot_info[0]] = idx(int(x)-1,int(y)-1)
+            target_info =  lines[5].rstrip().split(" ")
+            target = target_info[0]+"T"
+            y,x = target_info[1:]
+            target_id = idx(int(x)-1,int(y)-1)
+            obstacles = defaultdict(list)
+            for line in lines[7:]:
+                y,x,obst = line.rstrip().split(" ")
+                cell_id = idx(int(x)-1,int(y)-1)
+                obstacles[cell_id].append(translate_dic_rev[obst])
+            obstacles[target_id].append(target)
+            grid = []
+            for i in range(dim*dim):
+                if i in obstacles.keys():
+                    grid.append("".join(obstacles[i]))
+                else:
+                    grid.append("X")
+            return grid,robots,target,target_id
 
     def save_txt(self,filenum=0,):
         grid = []
