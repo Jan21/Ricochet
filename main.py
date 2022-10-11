@@ -273,22 +273,30 @@ class View(wx.Panel):
         subgoal_chain = self.get_subgoal_chain(solution)
         return True
 
-    def get_incumbent_and_filter_subgoals(self,evaluated_target_subgoals,evaluated_helper_subgoals,incumbent,reachable_nodes):
+    def get_incumbent_and_filter_subgoals(self,evaluated_target_subgoals,evaluated_helper_subgoals,incumbent,reachable_nodes,moves,microegraph):
         #TODO don't verify incumbent again
         solqeue = sorted([incumbent]+evaluated_target_subgoals+evaluated_helper_subgoals, key=lambda x: x.possible_cost)
         best = incumbent
         for sol in solqeue:
             if sol.possible_cost >= 10**6:
                 break
-            if self.verify(sol): # get the first valid sol
-                best = sol
-                break
+            if sol.possible_cost<incumbent.possible_cost:
+                finished,moves_,microegraph_ = self.check_solution(sol)
+                if finished :
+                    microegraph = microegraph_
+                    moves = moves_
+                    best = sol
+                    best.possible_cost=len(moves)
+                    break
+            #if self.verify(sol): # get the first valid sol
+            #    best = sol
+            #    break
         incumbent_cost = best.possible_cost
         filtered_target = [a for a in evaluated_target_subgoals if (a.priority < incumbent_cost and a.info['goal_idx'] in reachable_nodes)]
         filtered_helper = [a for a in evaluated_helper_subgoals if a.priority < incumbent_cost]
         #print("target:",len(evaluated_target_subgoals), "helper:",len(evaluated_helper_subgoals))
         #print(len(filtered_target), len(filtered_helper))
-        return best, filtered_target+filtered_helper
+        return best, filtered_target+filtered_helper,moves,microegraph
 
     def flatten_subgoals(self,subgoal,sb_list):
         info = subgoal.info
@@ -308,6 +316,7 @@ class View(wx.Panel):
         plan_graph = nx.DiGraph()
         trajcolors = [id2col[info['target_idx']]]
         trajcolor = trajcolors[-1]
+
         trajs = [[str(info['target_idx'])+trajcolor,str(info['goal_idx'])+trajcolor]]
         for i in range(len(sb_list)-1):
             info = sb_list[-(i+2)]
@@ -327,6 +336,7 @@ class View(wx.Panel):
                 trajs.insert(0,[str(info['helper_idx'])+hlpcol,str(info['support_cell_idx'])+hlpcol])
         colormap = {}
         colors = {'G':'green','Y':'yellow','B':'blue','R':'red'}
+        robots_used = []
         for traj in trajs:
             c = traj[0][-1] #id2col[traj[0]]
             colormap[traj[-1]]=colors[c]
@@ -334,6 +344,7 @@ class View(wx.Panel):
                 colormap[traj[i]]=colors[c]
                 if not plan_graph.has_edge(traj[i],traj[i+1]):
                     plan_graph.add_edge(traj[i],traj[i+1],edge_color='black')
+
         colmap = []
         for node in plan_graph:
             colmap.append(colormap[node])
@@ -486,10 +497,10 @@ class View(wx.Panel):
         if labelsdict:
             nx.draw(graph, pos,labels = labelsdict, with_labels=True, node_size=150, node_color=colmap, font_size=6, font_weight='bold')
         elif colmap and labelsdict==None:
-            nx.draw(graph, pos,with_labels = True,node_size=500, node_color=colmap, font_size=4,font_weight='bold')
+            nx.draw(graph, pos,with_labels = True,node_size=500, node_color=colmap, font_size=8,font_weight='bold')
 
         else:
-            nx.draw(graph, pos, with_labels=True, node_size=500, font_size=4, font_weight='bold')
+            nx.draw(graph, pos, with_labels=True, node_size=500, font_size=8, font_weight='bold')
         plt.savefig(name)
         plt.clf()
 
@@ -560,7 +571,7 @@ class View(wx.Panel):
     def get_micrograph(self,goal,macro,micro,prev):
         parrents = list(macro.predecessors(goal))
         assert len(parrents)<3
-        if len(parrents)!=2:
+        if len(parrents)!=2 and not (len(parrents)==1 and parrents[0][0][-1]!=goal[0][-1]):
             chain = self.get_microedge(goal, micro)
             micro.add_edge(chain[-1],prev)
             if len(parrents)==1:
@@ -583,8 +594,8 @@ class View(wx.Panel):
     def are_in_same_chain(self,G,i,j):
         if i==j:
             return True
-        i_desc = nx.descendants(G, i)
-        j_desc = nx.descendants(G,j)
+        i_desc = self.get_proper_ancestors(G,i)
+        j_desc = self.get_proper_ancestors(G,j)
         if i in j_desc or j in i_desc:
             return True
         else:
@@ -592,8 +603,8 @@ class View(wx.Panel):
 
 
     def add_blocking_edges(self,graph):
-        last_dic = defaultdict(list)
-        cells_dic = defaultdict(list)
+        last_dic = defaultdict(list) # last point of_dge: edge_ids
+        cells_dic = defaultdict(list) # point of edges: edge_ids
         for k,v in graph.nodes.items():
             cells = v['cells']
             last = cells[-1]
@@ -604,7 +615,7 @@ class View(wx.Panel):
             if k in cells_dic:
                 for i in cells_dic[k]:
                     for j in v:
-                        if self.are_in_same_chain(graph,i,j):
+                        if self.are_in_same_chain(graph,i,j) or (i,j) in graph.edges:
                             continue
                         graph.add_edge(i,j,constraint=True)
         return graph
@@ -622,14 +633,16 @@ class View(wx.Panel):
 
     def macrograph2micrograph(self,macro):
         leaves = [x for x in macro.nodes() if macro.out_degree(x) == 0]
+        micro = nx.DiGraph()
+        if len(leaves)!= 1:
+            return micro,[],{}
         assert len(leaves) == 1
         # TODO check for cycles
         goal = leaves[0]
-        micro = nx.DiGraph()
         chain,micro = self.get_micrograph(goal, macro, micro,'end')
         micro.remove_node('end')
-        #micro = self.add_starting(micro)
-        #micro = self.add_blocking_edges(micro)
+        micro = self.add_starting(micro)
+        micro = self.add_blocking_edges(micro)
 
         colmap = [micro.nodes[node]['color'] for node in micro.nodes]
         namemap = {node:micro.nodes[node]['name2'] for node in micro.nodes}
@@ -669,11 +682,11 @@ class View(wx.Panel):
                     edges2remove += [(par[0],n),(n,child[0])]
                     edge2add.append((par[0],child[0]))
                     nodes2remove.append(n)
-                print(edges2remove)
+                #print(edges2remove)
 
 
         for e in edges2remove:
-            print(e)
+            #print(e)
             eG.remove_edge(e[0],e[1])
         for n in nodes2remove:
             eG.remove_node(n)
@@ -681,61 +694,158 @@ class View(wx.Panel):
             eG.add_edge(e[0],e[1])
         return eG
 
-
+    def cant_go_throug(self,graph,s):
+        col = graph.nodes[s]['color']
+        edges = graph.in_edges(s)
+        passed = False
+        par_cols = []
+        for e in edges:
+            if 'constraint' in graph.edges[e]: # support to gate is not a constraint
+                continue
+            else:
+                par_col = graph.nodes[e[0]]['color']
+                par_cols.append(par_col)
+                if par_col!=col and 'passed' in graph.nodes[e[0]]:
+                    passed=True
+        support = not passed
+        return 'junction' in graph.nodes[s] and support
 
     def next_free(self,graph,s):
         free = None
-        sources = set([x for x in graph.nodes() if graph.in_degree(x) == 0])-set([s])
+        if len(graph.out_edges(s))==0:
+            return None
+        sources = self.get_sources(graph)
+        sources = set(sources)-set([s])
         blocked = []
-        for s in sources:
-            for e in graph.out_edges(s):
+        for s_ in sources:
+            if s_==None:
+                continue
+            for e in graph.in_edges(s_):
                 if 'constraint' in graph.edges[e]:
-                    blocked.append(e[1])
+                    blocked.append(e[0])
+        endofhelp = False
         while True:
-            if 'junction' in graph.nodes[s] or s in blocked:
+            if endofhelp:
                 break
+            if self.cant_go_throug(graph,s) or (s in blocked and 'passed' not in graph.nodes[s]):
+                break
+            is_free = True
+            for e in graph.in_edges(s):
+                if 'constraint' in graph.edges[e] and 'passed' not in graph.nodes[e[0]]:
+                    is_free = False
+            if is_free:
+                free = s
             if len(graph.out_edges(s))==0:
                 break
+
+            endofhelp = True
+            for edge in graph.out_edges(s): # check if there is at least one descendant of the same color
+                next = edge[1]
+                if graph.nodes[s]['color'] == graph.nodes[next]['color']:
+                    endofhelp = False
+                    break
+
             for edge in graph.out_edges(s):
                 if 'constraint' in graph.edges[edge]:
                     continue
                 else:
-                    next=edge[1]
-                    is_free = True
-                    for e in graph.in_edges(next):
-                        if 'constraint' in graph.edges[e]:
-                            is_free = False
-                    if is_free:
-                        free = next
+                    next = edge[1]
+                    #if self.cant_go_throug(graph,edge[1]) or edge[1] in blocked:
+                    #    s=next
+                    #    break
                     s = next
                     break
         return free
 
-    def unitprop(self,graph,sources):
+    def next_node(self,graph,s):
+        next = None
+        col = graph.nodes[s]['color']
+        for e in graph.out_edges(s):
+            if 'constraint' in graph.edges[e]:
+                continue
+            else:
+                next_ = e[1]
+                next_col = graph.nodes[next_]['color']
+                if col==next_col:
+                    next=next_
+        return next
+
+    def get_proper_ancestors(self,graph,s):
+        ancestors = []
+        col = graph.nodes[s]['color']
+        while True:
+            has_proper_parent = False
+            for e in graph.in_edges(s):
+                par_col = graph.nodes[e[0]]['color']
+                if 'constraint' in graph.edges[e] or col!=par_col:
+                    continue
+                else:
+                    has_proper_parent = True
+                    ancestors.append(e[0])
+                    s=e[0]
+            if not has_proper_parent:
+                break
+        ancestors.reverse()
+        return ancestors
+
+    def get_sources(self,graph):
+        sources = []
+        for n in graph.nodes:
+            pars = []
+            for e in graph.in_edges(n):
+                if 'constraint' in graph.edges[e]:
+                    continue
+                else:
+                    pars.append(e[0])
+            if len(pars) == 0:
+                sources.append(n)
+        return sources
+
+    def unitprop(self,graph):
         upchains  = []
+        target_color = self.game.token[0]
+        colors = {'G':'green','Y':'yellow','B':'blue','R':'red'}
+        leaves = [x for x in graph.nodes() if graph.nodes[x]['color']==colors[target_color] and len(list(filter(lambda y:'constraint' not in graph.edges[y], graph.out_edges(x)))) == 0]
+        assert len(leaves)==1
+        # TODO check for cycles
+        goal = leaves[0]
+        sources = self.get_sources(graph)
+        finished = False
         while True:  # unitprop
             new_sources = []
             for i, s in enumerate(sources):
+                if s==None:
+                    new_sources.append(None)
+                    continue
                 last = self.next_free(graph, s)
+                if last==goal:
+                    finished=True
                 if last != None:
-                    upchain = nx.ancestors(graph, last)
-                    upchains.append([graph.nodes[n]['name2'] for n in upchain])
+                    graph.nodes[last]['passed']=True
+                    upchain = self.get_proper_ancestors(graph, last)
+                    moves = upchain[1:]
+                    moves.append(last)
+                    #assert len(moves)==(len(upchain)) or len(upchain)==0
+                    upchains.append([(graph.nodes[n]['move'],graph.nodes[n]['name2']) for n in moves if 'move' in graph.nodes[n]])
                     for n in upchain:
                         graph.remove_node(n)
                 else:
-                    last = s
+                    last=s
                 new_sources.append(last)
             if sources == new_sources:
                 break
             sources = new_sources
-        return upchains,graph,sources
+        return upchains,graph,sources,finished
 
     def find_schedule(self,graph):
         graph = graph.copy()
-        sources = [x for x in graph.nodes() if graph.in_degree(x) == 0]
-        upchains,graph,sources = self.unitprop(graph,sources)
-        print(upchains)
-        return upchains
+        #sources = [x for x in graph.nodes() if graph.in_degree(x) == 0]
+        upchains,graph,sources,finished = self.unitprop(graph)
+        #for ch in upchains:
+        #    print(ch)
+        #if len(graph.nodes)>0:
+        #    print(len(graph.nodes))
+        return upchains,finished
 
     def save_partial_sol(self,graph,ix):
         sol_str = ""
@@ -747,6 +857,8 @@ class View(wx.Panel):
             dd = defaultdict(lambda:defaultdict(list))
             colors_used = []
             for k,v in graph.nodes.items():
+                if len(v['cells'])==1:
+                    continue
                 #cell = v['name2'][0]
                 cells = v['cells']
                 move = v['move'][0]
@@ -777,21 +889,53 @@ class View(wx.Panel):
         with open(f"../partial_sol/{ix}.partial",'w') as f:
             f.write(sol_str)
 
+    def execute_plan(self,moves):
+        target_robot = self.game.token[0]
+        info = self.game.robots.copy()
+        used_robots = set([move[0][1] if len(move[0])==3 else move[0][0][-1] for move in moves])
+        not_used = set(self.game.robots.keys()) - used_robots
+        for r in not_used:
+            del self.game.robots[r]
+
+        for move_name in moves:
+            move = move_name[0]
+            #print(move_name[1])
+            if len(move)==2:
+                continue
+            self.game.do_move_unsafe(move[1], move[0])
+        if 'T' not in self.game.grid[self.game.robots[target_robot]]:
+            print("-"*3)
+        self.game.robots = info
+        return
+
     def check_solution(self,sol):
         if sol.possible_cost > 10**6:
             #print('no solution found')
             self.num_unsolved += 1
-            return []
+            print('no plan found')
+            return False,[],[]
         sb_list = self.flatten_subgoals(sol,[])
         trajs,graph,colmap = self.reconstruct_plan(sb_list)
         graph.remove_edges_from(nx.selfloop_edges(graph))
+        if len(list(nx.simple_cycles(graph)))!=0:
+            print('cycles')
+            return False,[],[]
         egraph = self.edges2nodes(graph)
         #self.plot_solution(graph,colmap)
         #self.plot_solution(egraph,name='graph2.png')
         microegraph,microcolmap,namemap = self.macrograph2micrograph(egraph)
-        self.plot_solution(microegraph,microcolmap,namemap,name='graph3.png')
-        plan = self.find_schedule(microegraph)
-        return microegraph
+        #self.plot_solution(microegraph,microcolmap,namemap,name=f'../graph_images/low_level/{self.last_loaded}.png')
+        if len(microcolmap)==0:
+            print('no micro')
+            return False,[],[]
+        plan,finished = self.find_schedule(microegraph)
+        moves = [move for moves_ in plan for move in moves_]
+        if len(moves)!=0 and finished:
+            self.execute_plan(moves)
+        else:
+            finished = False
+            print('plan does not work')
+        return finished,moves,microegraph
         #macromoves = self.graph2moves_naive(graph)
         #print(macromoves)
         #micromoves = self.macros2micros(macromoves)
@@ -831,7 +975,16 @@ class View(wx.Panel):
         frontier = PriorityQueue()
         frontier.put(finalgoal)
         incumbent = finalgoal
-        for i in range(5000):
+        moves = []
+        microegraph = []
+        if incumbent.possible_cost < 10**6:
+            finished, moves_,microegraph_ = self.check_solution(incumbent)
+            if finished:
+                microegraph = microegraph_
+                moves = moves_
+                incumbent.possible_cost = len(moves)
+
+        for i in range(1000):
             if len(frontier.elements)==0:
                 #print(f"no more subgoals on {i}th iteration")
                 break
@@ -845,11 +998,23 @@ class View(wx.Panel):
             # if current == goal: check if best priority == best
 
             evaluated_target_subgoals, evaluated_helper_subgoals = self.find_solution(target_robot_idx,goal_idx,helpers_idxs,cg,evaluator,cost_so_far,current)
-            incumbent,filtered = self.get_incumbent_and_filter_subgoals(evaluated_target_subgoals,evaluated_helper_subgoals,incumbent,reachable_nodes)
+            incumbent,filtered,moves,microegraph = self.get_incumbent_and_filter_subgoals(evaluated_target_subgoals,evaluated_helper_subgoals,incumbent,reachable_nodes,moves,microegraph)
+            #print(incumbent.possible_cost)
+            # if incumbent_.possible_cost<incumbent.possible_cost:
+            #     finished,moves_,microegraph_ = self.check_solution(incumbent_)
+            #     if finished :
+            #         microegraph = microegraph_
+            #         moves = moves_
+            #         incumbent = incumbent_
+            #         incumbent.possible_cost=len(moves)
+
             frontier.merge(filtered)
+
         #print('final solution',incumbent)
-        micromoves = self.check_solution(incumbent)
-        return micromoves
+        if len(moves)!=0:
+            print('solved',"!"*10)
+        else: print('not solved')
+        return microegraph
         #for next in graph.neighbors(current):
         #    new_cost = cost_so_far[current] + graph.cost(current, next)
         #    if next not in cost_so_far or new_cost < cost_so_far[next]:
@@ -890,7 +1055,7 @@ class View(wx.Panel):
             #self.num_unsolved += 1
             #print('unsolved')
 
-        print(self.num_unsolved)
+        #print(self.num_unsolved)
         #print("problem num: ",i)
         #print("moves: ",micromoves)
         if i!=0:
@@ -925,20 +1090,21 @@ class View(wx.Panel):
                 #self.game.grid, self.game.robots, self.game.token, self.game.token_id = self.game.load_txt(i)
                 #cost_obtained = self.get_graph()
                 import time
-                for i in range(100):
+                for i in range(0,9):
 
                     print(str(i)+"*"*15)
                     self.game.grid,self.game.robots,self.game.token,self.game.token_id = self.game.load_txt(i)
                     self.Refresh()
                     micromoves = self.get_graph()
-                    #self.save_partial_sol(micromoves, i)
+                    self.last_loaded += 1
+                    self.save_partial_sol(micromoves, i)
                     #self.save_sol(micromoves,i)
                     #costs.append(cost_obtained)
                 #with open('results3-5.pkl','wb') as f:
                 #    pickle.dump(costs,f)
                 self.Refresh()
             elif value == 'V': # load saved games 1 by 1
-                #self.last_loaded=39
+                self.last_loaded=159
                 self.game.grid, self.game.robots, self.game.token, self.game.token_id = self.game.load_txt(self.last_loaded)
                 self.Refresh()
                 micromoves = self.get_graph()
@@ -947,7 +1113,7 @@ class View(wx.Panel):
                 #self.save_sol(micromoves,self.last_loaded)
                 self.last_loaded += 1
             elif value=='I':
-                self.game.grid, self.game.robots, self.game.token, self.game.token_id = self.game.load_txt(self.last_loaded-1)
+                self.game.grid, self.game.robots, self.game.token, self.game.token_id = self.game.load_txt(self.last_loaded)
                 self.Refresh()
                 self.last_loaded += 1
             elif value=='W':
@@ -1041,7 +1207,7 @@ class View(wx.Panel):
         for color,nodes in self.nodes.items():
             color_offset = 0 #model.COLOR_OFFSETS[color]
             width = 2
-            print(color)
+            #print(color)
             for node in nodes:
                dc.SetPen(wx.Pen(colors[color], width, wx.DOT))
                x1, y1 = model.xy(node)

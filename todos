@@ -6,3 +6,7 @@ support graph contains duplicate edges
 check agains locked robot
 rewrite to cugraph
 don't verify incumbent again
+
+
+dont remove last free node
+in 51 you are missing a constraint

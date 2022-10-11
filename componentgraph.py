@@ -77,7 +77,7 @@ class SubgoalEvaluator():
     def evaluate_helper_subgoals(self,target_robot_idx,goal_idx,helpers_idx,supports_helper2goal,cost_so_far,previous_subgoals):
         helper_subgoals = []
         for j,helper_supports in enumerate(supports_helper2goal):
-            for support in helper_supports: # iterate all support for one robot
+            for support in helper_supports: # iterate all support for one robot # (from_comp,to_comp,support_cell_id,gate_cell_id,stop_cell_id)
                 helper2goal_dist = len(self.all_pairs_distance[helpers_idx[j]][support[2]]) - 1\
                 + len(self.all_pairs_distance[support[3]][goal_idx]) - 1 # helper to support + gate_cell to goal distance
                 if support[4] in self.all_pairs_distance[target_robot_idx].keys():
@@ -104,7 +104,7 @@ class SubgoalEvaluator():
 
     def evaluate_target_subgoals(self,target_robot_idx,goal_idx,helpers_idx,bridges_target2goal,cost_so_far,previous_subgoals):
         target_subgoals = []
-        for bridge in bridges_target2goal:
+        for bridge in bridges_target2goal: # (from_comp_id, to_comp_id, gate_cell_id, tuple(support_ids),tuple(stop_cell_ids))
             for i in range(2): # 2 possible stop positions
                 target2goal_dist = len(self.all_pairs_distance[target_robot_idx][bridge[4][1-i]])\
                                       + len(self.all_pairs_distance[bridge[2]][goal_idx]) - 1 # +1 is there to account for stop to gate step

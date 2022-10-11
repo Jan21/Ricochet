@@ -304,7 +304,7 @@ def to_mask(cell):
 
 translate_dic = {"N":'u',
                  "E":'r',
-                 "S":'b',
+                 "S":'d',
                  "W":'l'}
 translate_dic_rev = {}
 for k,v in translate_dic.items():
@@ -401,6 +401,34 @@ class Game(object):
                 break
             index = new_index
         return index
+
+    def check_blocking_robot(self,color,direction):
+        index = self.robots[color]
+        robots = self.robots.values()
+        not_blocking = True
+        while True:
+            if direction in self.grid[index]:
+                break
+            index = index + OFFSET[direction]
+            if index in robots:
+                not_blocking = False
+                break
+        return not_blocking,index
+
+    def avoid_robot(self,index):
+        pass
+
+    def do_move_and_avoid(self, color, direction):
+        start = self.robots[color]
+        last = self.last
+        not_blocking,index = self.check_blocking_robot(color,direction)
+        if not not_blocking:
+            self.avoid_robot(index)
+        end = self.compute_move(color, direction)
+        self.moves += 1
+        self.robots[color] = end
+        self.last = (color, direction)
+        return (color, start, last)
 
     def do_move_unsafe(self, color, direction):
         start = self.robots[color]
@@ -508,6 +536,9 @@ class Game(object):
         return paths
     def get_edges_in_comp(self,comp,G):
         edges = []
+        if len(comp)==1:
+            id=list(comp)[0]
+            return [(id,id)]
         for (u,v) in G.edges:
             if (u in comp) and (v in comp):
                 edges.append((u,v))
@@ -521,6 +552,8 @@ class Game(object):
             self.robots[col]=-10 # temporarily remove robots from the grid
         reachable_nodes = []
         for cell in range(len(self.grid)):
+            if cell in pos_dic.values(): # TODO add
+                reachable_nodes.append(cell)
             x,y = xy(cell)
             if (x==16 or x==15) and (y==16 or y==15):
                 continue
@@ -528,7 +561,8 @@ class Game(object):
                 G.add_edge(cell,neighbour)
                 reachable_nodes.append(neighbour)
         reachable_nodes = set(reachable_nodes)
-        strongly_connected_comps = list(enumerate(filter(lambda x:len(x)>=2,nx.algorithms.components.strongly_connected_components(G))))
+        # from each node in a component you can get to any other node in that component
+        strongly_connected_comps = list(enumerate(filter(lambda x:(len(x)>=2 or list(x)[0] in pos_dic.values()),nx.algorithms.components.strongly_connected_components(G))))
         relaxedG = nx.DiGraph(G)
         for e in relaxedG.edges():
             relaxedG[e[0]][e[1]]['weight'] = 1
@@ -537,11 +571,11 @@ class Game(object):
         sorted_comps = sorted(strongly_connected_comps,key=lambda x:-len(x[1]))
         edges_in_comps = []
         for i,comp in sorted_comps:
-            if len(comp)<2:
-                print('error')
+            #if len(comp)<2: TODO add back
+            #    print('error')
             edges = self.get_edges_in_comp(comp,G) # ineffective, iterates over all edges in G and checks if they are in comp
-            if len(edges)<2:
-                print('error')
+            #if len(edges)<2:
+            #f    print('error')
             edges_in_comps.append((i,edges))
         nodes_in_comps = []
         robots_in_comps = defaultdict(list)
@@ -560,8 +594,8 @@ class Game(object):
 
                 nodes += edge_nodes
             nodes_idxs = list(map(lambda x:x[0],nodes))
-            if len(nodes)<2:
-                print('error')
+            #if len(nodes)<2:
+            #    print('error')
             #check if robot is in the component
             for k,v in pos_dic.items():
                 if v in nodes_idxs:
@@ -581,7 +615,6 @@ class Game(object):
                 id2comp[node] = i
         for u,v in G.edges: # edges are directional.
             if u in id2comp.keys() and v in id2comp.keys():
-
                 HG.add_edge(id2comp[u],id2comp[v])
 
         id2comp_full = defaultdict(list)
@@ -593,21 +626,20 @@ class Game(object):
         mHG.add_nodes_from(HG)
         supportHG = nx.MultiDiGraph()
         supportHG.add_nodes_from(HG)
-        for k,v in id2comp_full.items():
+        for k,v in id2comp_full.items(): # k is cell_id v is list of transitions to the cell id from a component (3,(157,159,128,159)).. 3 is component, the tuple contains supports and stops
             v = set(v)
             if len(v)==1:
                 continue
             else:
                 for i in v:
                     for j in v:
-                        if i[0]==j[0] or (i[0],j[0]) in HG.edges: # don't add selfloops or duplicate edges
+                        is_self_shortcut = i[0]==j[0] and i[1][:2]!=(-1,-1)
+                        if ((i[0],j[0]) in HG.edges or i[0]==j[0]) and not is_self_shortcut: # don't add selfloops or duplicate edges
                             continue
                         else:
                             # check not(mHG.get_edge_data(i[0],j[0]) and mHG.get_edge_data(i[0],j[0])[0]['node_id']==k) and 
                             if (i[1][0] in reachable_nodes) or (i[1][1] in reachable_nodes):
                                mHG.add_edge(i[0],j[0],possible=True,node_id=k,neighbours=i[1][:2],stop_cells=i[1][2:])
-
-
 
 
                             if i[1][0] in reachable_nodes and i[1][0] in id2comp.keys():
@@ -708,7 +740,7 @@ class Game(object):
         }
 
     def load_txt(self,filenum):
-        with open(f'../export/{str(filenum)}.rr','r') as f:
+        with open(f'../test32/t_{str(filenum)}.rr','r') as f:
             lines = f.readlines()
             dim = int(lines[0].rstrip())
             robots = {}
